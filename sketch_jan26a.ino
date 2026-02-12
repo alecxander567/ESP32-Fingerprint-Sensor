@@ -20,6 +20,14 @@ WiFiMulti wifiMulti;
 HardwareSerial mySerial(2); 
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
+#define BUZZER_PIN 13
+
+void beepSuccess() {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(200);             
+    digitalWrite(BUZZER_PIN, LOW);
+}
+
 
 void updateStatus(int id, String status) {
     if(WiFi.status() == WL_CONNECTED){
@@ -207,12 +215,14 @@ void enrollFingerprint(int id) {
         Serial.println("Template created - fingerprints match!");
         Serial.println("Storing fingerprint to ID " + String(id) + "...");
         
-        if (finger.storeModel(id) == FINGERPRINT_OK) {
+       if (finger.storeModel(id) == FINGERPRINT_OK) {
             Serial.println("\n========================================");
             Serial.println("ENROLLMENT SUCCESS!");
             Serial.println("========================================\n");
             updateStatus(id, "success");
-        } else {
+            beepSuccess();  
+        }
+        else {
             Serial.println("Failed to store fingerprint in sensor memory");
             updateStatus(id, "error");
         }
@@ -224,6 +234,9 @@ void enrollFingerprint(int id) {
 
 void setup() {
     Serial.begin(115200);
+
+    pinMode(BUZZER_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW); 
     delay(1000);
     
     Serial.println("\n\n========================================");
