@@ -321,7 +321,7 @@ void scanForAttendance() {
         Serial.print("   Confidence: ");
         Serial.println(finger.confidence);
         Serial.println("========================================\n");
-
+        ledSuccess(); 
         beepSuccess();
         markAttendance(finger.fingerID);
         
