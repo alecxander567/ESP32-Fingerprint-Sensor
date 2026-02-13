@@ -232,6 +232,116 @@ void enrollFingerprint(int id) {
     }
 }
 
+void markAttendance(int fingerId) {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        String url = String(serverUrl) + "mark-attendance?finger_id=" + String(fingerId);
+
+        Serial.println("Sending attendance to server...");
+        Serial.println("URL: " + url);
+
+        http.begin(url);
+        http.setTimeout(5000);
+
+        int code = http.GET();
+        Serial.println("Server response: " + String(code));
+
+        http.end();
+    } else {
+        Serial.println("WiFi not connected!");
+    }
+}
+
+void scanForAttendance() {
+    // Remove the "Waiting for fingerprint" spam - only show when finger detected
+    
+    int p = finger.getImage();
+    if (p != FINGERPRINT_OK) return;  
+
+    Serial.println("\n🔍 FINGER DETECTED - Processing...");
+
+    p = finger.image2Tz();
+    if (p != FINGERPRINT_OK) {
+        Serial.println(" Failed to convert image");
+        Serial.print("   Error code: ");
+        Serial.println(p);
+        return;
+    }
+    Serial.println(" Image converted successfully");
+
+    Serial.println(" Searching fingerprint database...");
+    p = finger.fingerSearch();
+
+    if (p == FINGERPRINT_OK) {
+        Serial.println("\n========================================");
+        Serial.println(" MATCH FOUND!");
+        Serial.println("========================================");
+        Serial.print("   Finger ID: ");
+        Serial.println(finger.fingerID);
+        Serial.print("   Confidence: ");
+        Serial.println(finger.confidence);
+        Serial.println("========================================\n");
+
+        beepSuccess();
+        markAttendance(finger.fingerID);
+        
+        delay(2000);
+    } 
+    else if (p == FINGERPRINT_NOTFOUND) {
+        Serial.println("\n========================================");
+        Serial.println(" FINGERPRINT NOT FOUND");
+        Serial.println("========================================");
+        Serial.println("This fingerprint is not enrolled in the sensor.");
+        Serial.println("Checking sensor database...");
+        
+        // Debug: Check how many fingerprints are stored
+        finger.getTemplateCount();
+        Serial.print("   Total enrolled fingerprints: ");
+        Serial.println(finger.templateCount);
+        Serial.println("========================================\n");
+        
+        // Error sound (double beep)
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(100);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(100);
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(100);
+        digitalWrite(BUZZER_PIN, LOW);
+        
+        delay(2000); 
+    } 
+    else {
+        Serial.println("\n SENSOR ERROR");
+        Serial.print("   Error code: ");
+        Serial.println(p);
+        delay(1000);
+    }
+}
+
+String getDeviceMode() {
+    if (WiFi.status() != WL_CONNECTED) return "idle";
+
+    HTTPClient http;
+    String url = String(serverUrl) + "device-mode";
+
+    http.begin(url);
+    http.setTimeout(3000);
+
+    int code = http.GET();
+
+    if (code == 200) {
+        String payload = http.getString();
+        http.end();
+
+        if (payload.indexOf("attendance") != -1) return "attendance";
+        if (payload.indexOf("enroll") != -1) return "enroll";
+    }
+
+    http.end();
+    return "idle";
+}
+
 void setup() {
     Serial.begin(115200);
 
@@ -305,58 +415,55 @@ void setup() {
 }
 
 void loop() {
-    static unsigned long lastPoll = 0;
-    static int pollCount = 0;
-    
-    // Poll every 1 second
-    if (millis() - lastPoll >= 1000) {
-        lastPoll = millis();
-        pollCount++;
-        
-        if (wifiMulti.run() == WL_CONNECTED) {
+
+    static String currentMode = "";
+    static unsigned long lastModeCheck = 0;
+
+    // Check mode every 2 seconds
+    if (millis() - lastModeCheck > 2000) {
+        lastModeCheck = millis();
+        currentMode = getDeviceMode();
+
+        Serial.println("\nCurrent Mode: " + currentMode);
+    }
+
+    if (currentMode == "enroll") {
+
+        // -------- ENROLLMENT LOGIC --------
+        static unsigned long lastPoll = 0;
+
+        if (millis() - lastPoll >= 1000) {
+            lastPoll = millis();
+
             HTTPClient http;
             String url = String(serverUrl) + "check-enrollment";
-            
-            // Only print detailed logs every 10 polls to reduce spam
-            if (pollCount % 10 == 1) {
-                Serial.println("\nChecking for pending enrollments...");
-                Serial.println("   URL: " + url);
-            }
-            
+
             http.begin(url);
             int httpCode = http.GET();
-            
-            if (pollCount % 10 == 1) {
-                Serial.print("   Response code: ");
-                Serial.println(httpCode);
-            }
-            
+
             if (httpCode == 200) {
                 String payload = http.getString();
-                
-                if (pollCount % 10 == 1) {
-                    Serial.println("   Payload: " + payload);
-                }
-                
+
                 if (payload != "none" && payload.length() > 0) {
-                    Serial.println("\nFOUND ENROLLMENT REQUEST!");
-                    Serial.println("   Finger ID: " + payload);
+                    Serial.println("Enrollment request found!");
                     enrollFingerprint(payload.toInt());
-                    pollCount = 0; 
-                } else {
-                    if (pollCount % 10 == 1) {
-                        Serial.println("   → No pending enrollments");
-                    }
                 }
-            } else {
-                Serial.println("HTTP error: " + String(httpCode));
-                Serial.println("   Check if backend server is running at " + String(serverUrl));
             }
+
             http.end();
-        } else {
-            Serial.println(" WiFi disconnected! Attempting to reconnect...");
         }
     }
-    
-    delay(10); 
+
+    else if (currentMode == "attendance") {
+
+        // -------- ATTENDANCE LOGIC --------
+        scanForAttendance();
+    }
+
+    else {
+        // -------- IDLE --------
+        delay(500);
+    }
+
+    delay(10);
 }
