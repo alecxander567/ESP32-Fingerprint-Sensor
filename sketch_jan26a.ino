@@ -21,6 +21,8 @@ HardwareSerial mySerial(2);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
 #define BUZZER_PIN 13
+#define GREEN_LED_PIN 32
+#define RED_LED_PIN   33
 
 void beepSuccess() {
     digitalWrite(BUZZER_PIN, HIGH);
@@ -28,6 +30,27 @@ void beepSuccess() {
     digitalWrite(BUZZER_PIN, LOW);
 }
 
+void ledSuccess() {
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    delay(1000);
+    digitalWrite(GREEN_LED_PIN, LOW);
+}
+
+void ledError() {
+    digitalWrite(RED_LED_PIN, HIGH);
+    delay(1000);
+    digitalWrite(RED_LED_PIN, LOW);
+}
+
+void beepError() {
+    // Double beep for error
+    for (int i = 0; i < 2; i++) {
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(150);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(150);
+    }
+}
 
 void updateStatus(int id, String status) {
     if(WiFi.status() == WL_CONNECTED){
@@ -92,6 +115,8 @@ void enrollFingerprint(int id) {
             Serial.println(" ERROR: Sensor won't clear after 10 seconds!");
             Serial.println("   Please clean the sensor and try again.");
             updateStatus(id, "error");
+            beepError();
+            ledError();
             return;
         }
     }
@@ -124,6 +149,8 @@ void enrollFingerprint(int id) {
         if (millis() - startTime > 15000) {
             Serial.println("\nTIMEOUT waiting for finger!");
             updateStatus(id, "error");
+            beepError();
+            ledError();
             return;
         }
         delay(50);
@@ -137,6 +164,8 @@ void enrollFingerprint(int id) {
     if (finger.image2Tz(1) != FINGERPRINT_OK) {
         Serial.println("Image conversion failed");
         updateStatus(id, "error");
+        beepError();
+        ledError();
         return;
     }
     Serial.println(" Image 1 converted successfully");
@@ -165,6 +194,8 @@ void enrollFingerprint(int id) {
         if (millis() - startTime > 10000) {
             Serial.println("TIMEOUT waiting for finger removal!");
             updateStatus(id, "error");
+            beepError();
+            ledError();
             return;
         }
         delay(50);
@@ -193,6 +224,8 @@ void enrollFingerprint(int id) {
         if (millis() - startTime > 15000) {
             Serial.println("\nTIMEOUT waiting for second finger placement!");
             updateStatus(id, "error");
+            beepError();
+            ledError();
             return;
         }
         delay(50);
@@ -205,6 +238,8 @@ void enrollFingerprint(int id) {
     if (finger.image2Tz(2) != FINGERPRINT_OK) {
         Serial.println("Second image conversion failed");
         updateStatus(id, "error");
+        beepError();
+        ledError();
         return;
     }
     Serial.println(" Image 2 converted successfully");
@@ -220,15 +255,20 @@ void enrollFingerprint(int id) {
             Serial.println("ENROLLMENT SUCCESS!");
             Serial.println("========================================\n");
             updateStatus(id, "success");
-            beepSuccess();  
+            beepSuccess();
+            ledSuccess();  
         }
         else {
             Serial.println("Failed to store fingerprint in sensor memory");
             updateStatus(id, "error");
+            beepError();
+            ledError();
         }
     } else {
         Serial.println("Fingerprints did not match - please try again");
-        updateStatus(id, "error"); 
+        updateStatus(id, "error");
+        beepError();
+        ledError(); 
     }
 }
 
@@ -301,14 +341,9 @@ void scanForAttendance() {
         Serial.println("========================================\n");
         
         // Error sound (double beep)
-        digitalWrite(BUZZER_PIN, HIGH);
-        delay(100);
-        digitalWrite(BUZZER_PIN, LOW);
-        delay(100);
-        digitalWrite(BUZZER_PIN, HIGH);
-        delay(100);
-        digitalWrite(BUZZER_PIN, LOW);
-        
+       beepError();
+       ledError();
+
         delay(2000); 
     } 
     else {
@@ -347,6 +382,13 @@ void setup() {
 
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, LOW); 
+
+    pinMode(GREEN_LED_PIN, OUTPUT);
+    pinMode(RED_LED_PIN, OUTPUT);
+
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, LOW);
+
     delay(1000);
     
     Serial.println("\n\n========================================");
