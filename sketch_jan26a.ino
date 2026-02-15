@@ -43,7 +43,6 @@ void ledError() {
 }
 
 void beepError() {
-    // Double beep for error
     for (int i = 0; i < 2; i++) {
         digitalWrite(BUZZER_PIN, HIGH);
         delay(150);
@@ -84,7 +83,6 @@ void enrollFingerprint(int id) {
     
     int p = -1;
 
-    // --- STEP 1: PLACE FIRST TIME ---
     Serial.println("STEP 1: Waiting for finger placement...");
     updateStatus(id, "place_finger");
     Serial.println(" DEBUG: updateStatus(place_finger) completed");
@@ -92,7 +90,6 @@ void enrollFingerprint(int id) {
     unsigned long startTime = millis();
     int attempts = 0;
     
-    // First, wait for NO finger to ensure clean start
     Serial.println("Ensuring sensor is clear...");
     delay(500);
     
@@ -125,17 +122,14 @@ void enrollFingerprint(int id) {
         Serial.println(" Sensor is now clear!");
     }
     
-    // Small delay to ensure stable reading
     delay(1000);
     
-    // Now wait for finger placement
     Serial.println("Ready - waiting for finger...");
     startTime = millis(); 
     
     while (p != FINGERPRINT_OK) { 
         p = finger.getImage();
         
-        // Log every 50 attempts (about every 2.5 seconds)
         if (attempts % 50 == 0) {
             Serial.print(".");
             Serial.print(" [Attempt ");
@@ -159,7 +153,6 @@ void enrollFingerprint(int id) {
     Serial.println("\n Finger detected!");
     Serial.println("Reading fingerprint image...");
 
-    // Convert image 1
     Serial.println("Converting image 1...");
     if (finger.image2Tz(1) != FINGERPRINT_OK) {
         Serial.println("Image conversion failed");
@@ -170,10 +163,8 @@ void enrollFingerprint(int id) {
     }
     Serial.println(" Image 1 converted successfully");
     
-    // Small delay to ensure stability before asking to remove
     delay(500);
 
-    // --- STEP 2: REMOVE ---
     Serial.println("\nSTEP 2: Remove your finger...");
     updateStatus(id, "remove_finger");
     p = 0;
@@ -183,7 +174,6 @@ void enrollFingerprint(int id) {
     while (p != FINGERPRINT_NOFINGER) { 
         p = finger.getImage();
         
-        // Log every 20 attempts
         if (removeAttempts % 20 == 0 && removeAttempts > 0) {
             Serial.print("Still waiting for finger removal... [");
             Serial.print(removeAttempts);
@@ -203,7 +193,6 @@ void enrollFingerprint(int id) {
     Serial.println(" Finger removed");
     delay(1000); 
 
-    // --- STEP 3: PLACE AGAIN ---
     Serial.println("\nSTEP 3: Place the SAME finger again...");
     updateStatus(id, "place_again");
     p = -1;
@@ -233,7 +222,6 @@ void enrollFingerprint(int id) {
     Serial.println("\n Finger detected again!");
     Serial.println("Reading second fingerprint image...");
 
-    // Convert image 2
     Serial.println("Converting image 2...");
     if (finger.image2Tz(2) != FINGERPRINT_OK) {
         Serial.println("Second image conversion failed");
@@ -244,7 +232,6 @@ void enrollFingerprint(int id) {
     }
     Serial.println(" Image 2 converted successfully");
 
-    // --- STEP 4: CHECK MATCH AND SAVE ---
     Serial.println("\nSTEP 4: Creating fingerprint template...");
     if (finger.createModel() == FINGERPRINT_OK) {
         Serial.println("Template created - fingerprints match!");
@@ -316,7 +303,6 @@ void markAttendance(int fingerId) {
 }
 
 void scanForAttendance() {
-    // Remove the "Waiting for fingerprint" spam - only show when finger detected
     
     int p = finger.getImage();
     if (p != FINGERPRINT_OK) return;  
@@ -357,13 +343,11 @@ void scanForAttendance() {
         Serial.println("This fingerprint is not enrolled in the sensor.");
         Serial.println("Checking sensor database...");
         
-        // Debug: Check how many fingerprints are stored
         finger.getTemplateCount();
         Serial.print("   Total enrolled fingerprints: ");
         Serial.println(finger.templateCount);
         Serial.println("========================================\n");
         
-        // Error sound (double beep)
        beepError();
        ledError();
 
@@ -401,6 +385,21 @@ String getDeviceMode() {
     return "idle";
 }
 
+void sendHeartbeat() {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin("http://192.168.1.99:8000/device/heartbeat");
+        http.setTimeout(3000);
+
+        int code = http.GET();
+        Serial.println("Heartbeat sent. Code: " + String(code));
+
+        http.end();
+    } else {
+        Serial.println("Heartbeat failed - WiFi not connected");
+    }
+}
+
 void setup() {
     Serial.begin(115200);
 
@@ -421,7 +420,6 @@ void setup() {
     
     Serial.println("\nInitializing fingerprint sensor...");
     
-    // RX=16, TX=17
     mySerial.begin(57600, SERIAL_8N1, 16, 17);
     finger.begin(57600);
     
@@ -482,10 +480,16 @@ void setup() {
 
 void loop() {
 
+    static unsigned long lastHeartbeat = 0;
+
+    if (millis() - lastHeartbeat > 5000) {  
+        lastHeartbeat = millis();
+        sendHeartbeat();
+    }
+
     static String currentMode = "";
     static unsigned long lastModeCheck = 0;
 
-    // Check mode every 2 seconds
     if (millis() - lastModeCheck > 2000) {
         lastModeCheck = millis();
         currentMode = getDeviceMode();
@@ -494,8 +498,6 @@ void loop() {
     }
 
     if (currentMode == "enroll") {
-
-        // -------- ENROLLMENT LOGIC --------
         static unsigned long lastPoll = 0;
 
         if (millis() - lastPoll >= 1000) {
@@ -521,8 +523,6 @@ void loop() {
     }
 
     else if (currentMode == "delete") {
-
-        // -------- DELETE LOGIC --------
         static unsigned long lastDeletePoll = 0;
 
         if (millis() - lastDeletePoll >= 1000) {
@@ -548,13 +548,10 @@ void loop() {
     }
 
     else if (currentMode == "attendance") {
-
-        // -------- ATTENDANCE LOGIC --------
         scanForAttendance();
     }
 
     else {
-        // -------- IDLE --------
         delay(500);
     }
 
