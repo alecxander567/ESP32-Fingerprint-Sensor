@@ -272,6 +272,29 @@ void enrollFingerprint(int id) {
     }
 }
 
+void deleteFingerprint(int id) {
+    Serial.println("\n========================================");
+    Serial.println("DELETING FINGERPRINT ID: " + String(id));
+    Serial.println("========================================\n");
+    
+    uint8_t p = finger.deleteModel(id);
+    
+    if (p == FINGERPRINT_OK) {
+        Serial.println("✓ Fingerprint deleted successfully from sensor!");
+        updateStatus(id, "delete_success");
+        beepSuccess();
+        ledSuccess();
+    } else {
+        Serial.println("✗ Failed to delete fingerprint from sensor");
+        Serial.println("Error code: " + String(p));
+        updateStatus(id, "delete_error");
+        beepError();
+        ledError();
+    }
+    
+    Serial.println("========================================\n");
+}
+
 void markAttendance(int fingerId) {
     if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http;
@@ -298,7 +321,7 @@ void scanForAttendance() {
     int p = finger.getImage();
     if (p != FINGERPRINT_OK) return;  
 
-    Serial.println("\n🔍 FINGER DETECTED - Processing...");
+    Serial.println("\n FINGER DETECTED - Processing...");
 
     p = finger.image2Tz();
     if (p != FINGERPRINT_OK) {
@@ -371,6 +394,7 @@ String getDeviceMode() {
 
         if (payload.indexOf("attendance") != -1) return "attendance";
         if (payload.indexOf("enroll") != -1) return "enroll";
+        if (payload.indexOf("delete") != -1) return "delete";
     }
 
     http.end();
@@ -489,6 +513,33 @@ void loop() {
                 if (payload != "none" && payload.length() > 0) {
                     Serial.println("Enrollment request found!");
                     enrollFingerprint(payload.toInt());
+                }
+            }
+
+            http.end();
+        }
+    }
+
+    else if (currentMode == "delete") {
+
+        // -------- DELETE LOGIC --------
+        static unsigned long lastDeletePoll = 0;
+
+        if (millis() - lastDeletePoll >= 1000) {
+            lastDeletePoll = millis();
+
+            HTTPClient http;
+            String url = String(serverUrl) + "check-delete";
+
+            http.begin(url);
+            int httpCode = http.GET();
+
+            if (httpCode == 200) {
+                String payload = http.getString();
+
+                if (payload != "none" && payload.length() > 0) {
+                    Serial.println("Delete request found!");
+                    deleteFingerprint(payload.toInt());
                 }
             }
 
