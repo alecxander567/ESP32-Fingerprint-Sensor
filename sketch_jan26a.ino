@@ -19,6 +19,7 @@ WifiNetwork myNetworks[] = {
     {"SPCT WiFi",          ""},
     {"kupal123",          "kupal123"},
     {"ASUS_D0_2G_Guest",    ""},
+    {"dd-wrt",    ""},
 };
 
 WiFiMulti wifiMulti;
@@ -276,12 +277,25 @@ void scanForAttendance() {
         ledSuccess();
         beepSuccess();
         markAttendance(finger.fingerID);
-        delay(2000);
+
+        // Wait for finger to be lifted before accepting next scan
+        delay(500);
+        while (finger.getImage() != FINGERPRINT_NOFINGER) {
+            delay(50);
+        }
+        delay(500);
+
     } else if (p == FINGERPRINT_NOTFOUND) {
         Serial.println("\nFINGERPRINT NOT FOUND");
         beepError();
         ledError();
-        delay(2000);
+
+        // Wait for finger to be lifted before accepting next scan
+        while (finger.getImage() != FINGERPRINT_NOFINGER) {
+            delay(50);
+        }
+        delay(300);
+
     } else {
         Serial.println("\nSENSOR ERROR: " + String(p));
         delay(1000);
@@ -354,6 +368,11 @@ void setup() {
 
     if (finger.verifyPassword()) {
         Serial.println("Fingerprint sensor found at 57600 baud!");
+        finger.setSecurityLevel(2);
+        finger.getParameters();
+
+        Serial.print("Sensor capacity: ");
+        Serial.println(finger.capacity);
     } else {
         Serial.println("Sensor not found at 57600, trying 9600...");
         mySerial.begin(9600, SERIAL_8N1, 16, 17);
@@ -361,6 +380,10 @@ void setup() {
 
         if (finger.verifyPassword()) {
             Serial.println("Fingerprint sensor found at 9600 baud!");
+            finger.setSecurityLevel(2);
+            finger.getParameters();          
+            Serial.print("Sensor capacity: ");
+            Serial.println(finger.capacity);
         } else {
             Serial.println("\nFINGERPRINT SENSOR NOT FOUND! Halting...");
             while (1) { delay(1); }
