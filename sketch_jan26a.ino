@@ -6,8 +6,8 @@
 #include <Adafruit_Fingerprint.h>
 #include <esp_task_wdt.h>  // Watchdog
 
-const char* serverUrl   = "https://capstone-project-backend-2-apq4.onrender.com/fingerprints/";
-const char* heartbeatUrl = "https://capstone-project-backend-2-apq4.onrender.com/device/heartbeat";
+const char* serverUrl   = "https://capstone-project-backend-production.up.railway.app/fingerprints/";
+const char* heartbeatUrl = "https://capstone-project-backend-production.up.railway.app/device/heartbeat";
 
 // ── Timing constants (tweak here) ────────────────────────────────────────────
 #define MODE_POLL_MS       2000  
@@ -17,12 +17,12 @@ const char* heartbeatUrl = "https://capstone-project-backend-2-apq4.onrender.com
 
 struct WifiNetwork { const char* ssid; const char* password; };
 WifiNetwork myNetworks[] = {
-    {"PLDTHOMEFIBRdGp8s", "PLDTWIFIZp2Tr"},
-    {"slowifi!",          "Link.18"},
-    {"SPCT WiFi",         ""},
-    {"kupal123",          "kupal123"},
-    {"ASUS_D0_2G_Guest",  ""},
-    {"dd-wrt",            ""},
+   {"PLDTHOMEFIBRdGp8s", "PLDTWIFIZp2Tr"},
+    //{"slowifi!",          "Link.18"},
+    //{"SPCT WiFi",         ""},
+    //{"kupal123",          "kupal123"},
+    //{"ASUS_D0_2G_Guest",  ""},
+   // {"dd-wrt",            ""},
 };
 
 WiFiMulti wifiMulti;
