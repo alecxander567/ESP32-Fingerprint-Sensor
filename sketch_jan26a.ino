@@ -3,14 +3,16 @@
 #include <WiFiMulti.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <WebSocketsClient.h>
 #include <Adafruit_Fingerprint.h>
-#include <esp_task_wdt.h>  // Watchdog
+#include <esp_task_wdt.h>
 
-const char* serverUrl   = "https://capstone-project-backend-production.up.railway.app/fingerprints/";
-const char* heartbeatUrl = "https://capstone-project-backend-production.up.railway.app/device/heartbeat";
+const char* serverUrl = "https://capstone-project-backend-2-apq4.onrender.com/fingerprints/";
+const char* heartbeatUrl = "https://capstone-project-backend-2-apq4.onrender.com/device/heartbeat";
 
-// ── Timing constants (tweak here) ────────────────────────────────────────────
-#define MODE_POLL_MS       2000  
+// ── Timing constants ──────────────────────────────────────────────────────────
+#define MODE_POLL_MS       500    // WebSocket mode check
+#define HTTP_FALLBACK_MS   3000   // HTTP polling every 3 seconds as backup
 #define HEARTBEAT_MS      10000   
 #define WIFI_DEAD_RESTART  30000  
 #define WDT_TIMEOUT_S         60  
@@ -18,46 +20,59 @@ const char* heartbeatUrl = "https://capstone-project-backend-production.up.railw
 struct WifiNetwork { const char* ssid; const char* password; };
 WifiNetwork myNetworks[] = {
    {"PLDTHOMEFIBRdGp8s", "PLDTWIFIZp2Tr"},
-    //{"slowifi!",          "Link.18"},
-    //{"SPCT WiFi",         ""},
-    //{"kupal123",          "kupal123"},
-    //{"ASUS_D0_2G_Guest",  ""},
-   // {"dd-wrt",            ""},
+   {"kupal123",          "kupal123"},
 };
 
 WiFiMulti wifiMulti;
 HardwareSerial mySerial(2);
 Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
 
-// ── Single shared secure client — avoids repeated stack allocation ────────────
+// ── HTTP and WebSocket clients ──────────────────────────────────────────────
 WiFiClientSecure secureClient;
+HTTPClient http;
+WebSocketsClient webSocket;
 
 #define BUZZER_PIN     13
 #define GREEN_LED_PIN  32
 #define RED_LED_PIN    25
 
-// ── LED / Buzzer helpers ──────────────────────────────────────────────────────
-void beepSuccess() { digitalWrite(BUZZER_PIN, HIGH); delay(200); digitalWrite(BUZZER_PIN, LOW); }
-void beepError()   {
+// ── LED / Buzzer helpers ────────────────────────────────────────────────────
+void beepSuccess() { 
+    digitalWrite(BUZZER_PIN, HIGH); 
+    delay(200); 
+    digitalWrite(BUZZER_PIN, LOW); 
+}
+
+void beepError() {
     for (int i = 0; i < 2; i++) {
-        digitalWrite(BUZZER_PIN, HIGH); delay(150);
-        digitalWrite(BUZZER_PIN, LOW);  delay(150);
+        digitalWrite(BUZZER_PIN, HIGH); 
+        delay(150);
+        digitalWrite(BUZZER_PIN, LOW);  
+        delay(150);
     }
 }
-void ledSuccess()  { digitalWrite(GREEN_LED_PIN, HIGH); delay(1000); digitalWrite(GREEN_LED_PIN, LOW); }
-void ledError()    { digitalWrite(RED_LED_PIN,   HIGH); delay(1000); digitalWrite(RED_LED_PIN,   LOW); }
 
-// ── Centralised HTTP GET — reuses the shared client ──────────────────────────
-// Returns HTTP status code, fills `responseBody` if provided.
+void ledSuccess() { 
+    digitalWrite(GREEN_LED_PIN, HIGH); 
+    delay(1000); 
+    digitalWrite(GREEN_LED_PIN, LOW); 
+}
+
+void ledError() { 
+    digitalWrite(RED_LED_PIN, HIGH); 
+    delay(1000); 
+    digitalWrite(RED_LED_PIN, LOW); 
+}
+
+// ── Centralised HTTP GET ────────────────────────────────────────────────────
 int httpGet(const String& url, String* responseBody = nullptr) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[HTTP] WiFi not connected, skipping: " + url);
         return -1;
     }
 
-    HTTPClient http;
     http.begin(secureClient, url);
-    http.setTimeout(8000);                
+    http.setTimeout(5000);                
     http.setReuse(true);                 
 
     int code = http.GET();
@@ -67,11 +82,51 @@ int httpGet(const String& url, String* responseBody = nullptr) {
     if (code < 0) {
         Serial.println("[HTTP] Error on GET " + url + " → " + http.errorToString(code));
     }
-    http.end();
+    // DO NOT call http.end() - keep connection alive
+    // http.end();
     return code;
 }
 
-// ── WiFi reconnect with exponential backoff ───────────────────────────────────
+// ── Global variables for WebSocket ──────────────────────────────────────────
+String currentMode = "";
+bool wsConnected = false;
+unsigned long lastWsPing = 0;
+bool enrollmentInProgress = false;
+
+// ── WebSocket Event Handler ─────────────────────────────────────────────────
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+        case WStype_DISCONNECTED:
+            wsConnected = false;
+            Serial.println("[WS] Disconnected");
+            break;
+            
+        case WStype_CONNECTED:
+            wsConnected = true;
+            Serial.println("[WS] Connected");
+            break;
+            
+        case WStype_TEXT: {
+            String msg = String((char*)payload);
+            Serial.println("[WS] Received: " + msg);
+            
+            if (msg == "ping") {
+                webSocket.sendTXT("pong");
+            }
+            else if (msg.startsWith("mode:")) {
+                String mode = msg.substring(5);
+                if (mode == "enroll" || mode == "delete" || 
+                    mode == "recognize" || mode == "attendance" || mode == "idle") {
+                    currentMode = mode;
+                    Serial.println("[WS] Mode updated instantly to: " + currentMode);
+                }
+            }
+            break;
+        }
+    }
+}
+
+// ── WiFi reconnect ──────────────────────────────────────────────────────────
 static unsigned long wifiLostAt = 0;
 
 void handleWiFiReconnect() {
@@ -79,7 +134,6 @@ void handleWiFiReconnect() {
 
     if (wifiLostAt == 0) wifiLostAt = millis();  
 
-    // Hard restart if WiFi is gone too long
     if (millis() - wifiLostAt > WIFI_DEAD_RESTART) {
         Serial.println("[WiFi] Dead for 30 s — restarting ESP32...");
         ESP.restart();
@@ -91,12 +145,12 @@ void handleWiFiReconnect() {
 
     if (wifiMulti.run() == WL_CONNECTED) {
         Serial.println("[WiFi] Reconnected to " + WiFi.SSID());
-        backoffMs  = 1000;   // reset backoff
+        backoffMs  = 1000;
         wifiLostAt = 0;
     }
 }
 
-// ── Server helpers ─────────────────────────────────────────────────────────────
+// ── Server helpers ──────────────────────────────────────────────────────────
 void updateStatus(int id, const String& status) {
     String url = String(serverUrl) + "update-enrollment?id=" + id + "&status=" + status;
     int code = httpGet(url);
@@ -126,8 +180,9 @@ void markAttendance(int fingerId) {
     Serial.println("[Attendance] finger=" + String(fingerId) + " → HTTP " + code);
 }
 
-// ── Fingerprint enrollment ────────────────────────────────────────────────────
+// ── Fingerprint enrollment ──────────────────────────────────────────────────
 void enrollFingerprint(int id) {
+    enrollmentInProgress = true;
     Serial.println("\n=== ENROLL id=" + String(id) + " ===");
     esp_task_wdt_reset();   
 
@@ -137,7 +192,13 @@ void enrollFingerprint(int id) {
     // Wait for sensor to be clear first
     unsigned long t = millis();
     while (finger.getImage() == FINGERPRINT_OK) {
-        if (millis() - t > 20000) { updateStatus(id, "error"); beepError(); ledError(); return; }
+        if (millis() - t > 20000) { 
+            updateStatus(id, "error"); 
+            beepError(); 
+            ledError(); 
+            enrollmentInProgress = false;
+            return; 
+        }
         delay(500);
     }
     delay(500);
@@ -145,16 +206,34 @@ void enrollFingerprint(int id) {
     // Capture image 1
     t = millis();
     while ((p = finger.getImage()) != FINGERPRINT_OK) {
-        if (millis() - t > 30000) { updateStatus(id, "error"); beepError(); ledError(); return; }
+        if (millis() - t > 30000) { 
+            updateStatus(id, "error"); 
+            beepError(); 
+            ledError(); 
+            enrollmentInProgress = false;
+            return; 
+        }
         delay(50);
     }
-    if (finger.image2Tz(1) != FINGERPRINT_OK) { updateStatus(id, "error"); beepError(); ledError(); return; }
+    if (finger.image2Tz(1) != FINGERPRINT_OK) { 
+        updateStatus(id, "error"); 
+        beepError(); 
+        ledError(); 
+        enrollmentInProgress = false;
+        return; 
+    }
 
     // Remove finger
     updateStatus(id, "remove_finger");
     t = millis();
     while (finger.getImage() != FINGERPRINT_NOFINGER) {
-        if (millis() - t > 10000) { updateStatus(id, "error"); beepError(); ledError(); return; }
+        if (millis() - t > 10000) { 
+            updateStatus(id, "error"); 
+            beepError(); 
+            ledError(); 
+            enrollmentInProgress = false;
+            return; 
+        }
         delay(50);
     }
     delay(800);
@@ -163,58 +242,102 @@ void enrollFingerprint(int id) {
     updateStatus(id, "place_again");
     t = millis();
     while ((p = finger.getImage()) != FINGERPRINT_OK) {
-        if (millis() - t > 30000) { updateStatus(id, "error"); beepError(); ledError(); return; }
+        if (millis() - t > 30000) { 
+            updateStatus(id, "error"); 
+            beepError(); 
+            ledError(); 
+            enrollmentInProgress = false;
+            return; 
+        }
         delay(50);
     }
-    if (finger.image2Tz(2) != FINGERPRINT_OK) { updateStatus(id, "error"); beepError(); ledError(); return; }
+    if (finger.image2Tz(2) != FINGERPRINT_OK) { 
+        updateStatus(id, "error"); 
+        beepError(); 
+        ledError(); 
+        enrollmentInProgress = false;
+        return; 
+    }
 
     // Create & store model
     if (finger.createModel() == FINGERPRINT_OK && finger.storeModel(id) == FINGERPRINT_OK) {
         Serial.println("[Enroll] SUCCESS id=" + String(id));
-        updateStatus(id, "success"); beepSuccess(); ledSuccess();
+        updateStatus(id, "success"); 
+        beepSuccess(); 
+        ledSuccess();
     } else {
         Serial.println("[Enroll] FAILED id=" + String(id));
-        updateStatus(id, "error"); beepError(); ledError();
+        updateStatus(id, "error"); 
+        beepError(); 
+        ledError();
     }
+    
+    enrollmentInProgress = false;
+    currentMode = "";  // Reset mode after enrollment
+    Serial.println("[Enroll] Complete, mode reset");
 }
 
-// ── Delete fingerprint ────────────────────────────────────────────────────────
+// ── Delete fingerprint ──────────────────────────────────────────────────────
 void deleteFingerprint(int id) {
     Serial.println("\n=== DELETE id=" + String(id) + " ===");
     if (finger.deleteModel(id) == FINGERPRINT_OK) {
-        updateStatus(id, "delete_success"); beepSuccess(); ledSuccess();
+        updateStatus(id, "delete_success"); 
+        beepSuccess(); 
+        ledSuccess();
     } else {
-        updateStatus(id, "delete_error"); beepError(); ledError();
+        updateStatus(id, "delete_error"); 
+        beepError(); 
+        ledError();
     }
+    currentMode = "";  // Reset mode after delete
 }
 
-// ── Attendance scan ───────────────────────────────────────────────────────────
+// ── Attendance scan ─────────────────────────────────────────────────────────
 void scanForAttendance() {
-    if (finger.getImage() != FINGERPRINT_OK) return;
-    if (finger.image2Tz()  != FINGERPRINT_OK) return;
+    static unsigned long lastScanLog = 0;
+    
+    // Log every 5 seconds that we're waiting
+    if (millis() - lastScanLog > 5000) {
+        lastScanLog = millis();
+        Serial.println("[Attendance] Waiting for finger...");
+    }
+    
+    int imageResult = finger.getImage();
+    if (imageResult != FINGERPRINT_OK) {
+        return;
+    }
+    
+    Serial.println("[Attendance] Finger detected!");
+    
+    if (finger.image2Tz() != FINGERPRINT_OK) {
+        Serial.println("[Attendance] Failed to convert image");
+        return;
+    }
 
     int p = finger.fingerSearch();
     if (p == FINGERPRINT_OK) {
         Serial.println("[Attendance] Match! id=" + String(finger.fingerID)
                        + " conf=" + finger.confidence);
-        ledSuccess(); beepSuccess();
+        ledSuccess(); 
+        beepSuccess();
         markAttendance(finger.fingerID);
         delay(500);
         while (finger.getImage() != FINGERPRINT_NOFINGER) delay(50);
         delay(500);
     } else if (p == FINGERPRINT_NOTFOUND) {
         Serial.println("[Attendance] No match.");
-        beepError(); ledError();
+        beepError(); 
+        ledError();
         while (finger.getImage() != FINGERPRINT_NOFINGER) delay(50);
         delay(300);
     } else {
-        Serial.println("[Attendance] Sensor error: " + String(p));
+        Serial.println("[Attendance] Search error: " + String(p));
         delay(1000);
     }
 }
 
-// ── Recognition test mode ─────────────────────────────────────────────────────
-void doRecognition(String& currentMode) {
+// ── Recognition test mode ──────────────────────────────────────────────────
+void doRecognition(String& mode) {
     Serial.println("[Recognize] Waiting for finger...");
     int p = -1;
     unsigned long t = millis();
@@ -222,42 +345,43 @@ void doRecognition(String& currentMode) {
     while ((p = finger.getImage()) != FINGERPRINT_OK) {
         if (millis() - t > 15000) {
             httpGet(String(serverUrl) + "recognition-result?finger_id=0&matched=false");
-            currentMode = "idle";
+            mode = "idle";
             return;
         }
         delay(50);
     }
 
-    if (finger.image2Tz() != FINGERPRINT_OK) { currentMode = "idle"; return; }
+    if (finger.image2Tz() != FINGERPRINT_OK) { 
+        mode = "idle"; 
+        return; 
+    }
     p = finger.fingerSearch();
 
     String resultUrl;
     if (p == FINGERPRINT_OK) {
         Serial.println("[Recognize] Match id=" + String(finger.fingerID));
-        ledSuccess(); beepSuccess();
+        ledSuccess(); 
+        beepSuccess();
         resultUrl = String(serverUrl) + "recognition-result?finger_id=" + finger.fingerID + "&matched=true";
     } else {
         Serial.println("[Recognize] No match.");
-        ledError(); beepError();
+        ledError(); 
+        beepError();
         resultUrl = String(serverUrl) + "recognition-result?finger_id=0&matched=false";
     }
     httpGet(resultUrl);
-    currentMode = "idle";
+    mode = "idle";
     delay(2000);
 }
 
-// ── Setup ─────────────────────────────────────────────────────────────────────
+// ── Setup ────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     pinMode(BUZZER_PIN,    OUTPUT); digitalWrite(BUZZER_PIN,    LOW);
     pinMode(GREEN_LED_PIN, OUTPUT); digitalWrite(GREEN_LED_PIN, LOW);
     pinMode(RED_LED_PIN,   OUTPUT); digitalWrite(RED_LED_PIN,   LOW);
 
-    // ── WATCHDOG FIX for ESP32 Arduino core v3.x ─────────────────────────────
-    // The old 2-argument esp_task_wdt_init(seconds, panic) API was removed.
-    // Use a config struct with esp_task_wdt_reconfigure() instead.
-    // (The Arduino framework already calls esp_task_wdt_init() internally,
-    //  so we just reconfigure the existing watchdog rather than re-init it.)
+    // ── WATCHDOG ──────────────────────────────────────────────────────────────
     esp_task_wdt_config_t wdt_config = {
         .timeout_ms    = WDT_TIMEOUT_S * 1000,
         .idle_core_mask = 0,
@@ -265,7 +389,6 @@ void setup() {
     };
     esp_task_wdt_reconfigure(&wdt_config);
     esp_task_wdt_add(NULL);
-    // ─────────────────────────────────────────────────────────────────────────
 
     delay(1000);
     Serial.println("\n=== ESP32 FINGERPRINT SYSTEM ===");
@@ -285,7 +408,6 @@ void setup() {
     finger.getParameters();
     Serial.println("Sensor ready. Capacity: " + String(finger.capacity));
 
-    // Shared TLS client — set once, reuse forever
     secureClient.setInsecure();
 
     // WiFi
@@ -293,16 +415,35 @@ void setup() {
     Serial.println("Connecting to WiFi...");
     int tries = 0;
     while (wifiMulti.run() != WL_CONNECTED) {
-        delay(500); Serial.print(".");
-        if (++tries > 60) { Serial.println("\nTimeout! Restarting..."); ESP.restart(); }
+        delay(500); 
+        Serial.print(".");
+        if (++tries > 60) { 
+            Serial.println("\nTimeout! Restarting..."); 
+            ESP.restart(); 
+        }
     }
     Serial.println("\nConnected to " + WiFi.SSID() + "  IP: " + WiFi.localIP().toString());
+
+    // ── WebSocket Connection ──────────────────────────────────────────────────
+    webSocket.beginSSL("capstone-project-backend-2-apq4.onrender.com", 443, "/fingerprints/ws/esp32-default");
+    webSocket.onEvent(webSocketEvent);
+    webSocket.setReconnectInterval(3000);
+
     Serial.println("=== SYSTEM READY ===\n");
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
     esp_task_wdt_reset();   
+
+    // Process WebSocket messages
+    webSocket.loop();
+
+    // Keep WebSocket alive
+    if (wsConnected && millis() - lastWsPing > 30000) {
+        lastWsPing = millis();
+        webSocket.sendTXT("ping");
+    }
 
     // WiFi guard
     if (WiFi.status() != WL_CONNECTED) {
@@ -317,13 +458,40 @@ void loop() {
         sendHeartbeat();
     }
 
-    // Mode polling (slower = more stable)
-    static String  currentMode   = "";
+    // ── HTTP FALLBACK POLLING ────────────────────────────────────────────────
+    // ALWAYS check mode via HTTP every 3 seconds as backup
+    static unsigned long lastHttpCheck = 0;
+    if (millis() - lastHttpCheck > HTTP_FALLBACK_MS) {
+        lastHttpCheck = millis();
+        String mode = getDeviceMode();
+        if (mode != currentMode) {
+            Serial.println("[HTTP] Mode changed to: " + mode);
+            currentMode = mode;
+        }
+    }
+
+    // ── WebSocket Mode Polling ──────────────────────────────────────────────
+    // Only for debug purposes when WebSocket is connected
     static unsigned long lastModeCheck = 0;
-    if (millis() - lastModeCheck > MODE_POLL_MS) {
+    if (wsConnected && millis() - lastModeCheck > MODE_POLL_MS) {
         lastModeCheck = millis();
-        currentMode   = getDeviceMode();
-        Serial.println("[Mode] " + currentMode);
+        // WebSocket handles mode updates via events
+    }
+
+    // ── Debug: print current mode every 10 seconds ──────────────────────────
+    static unsigned long lastDebug = 0;
+    if (millis() - lastDebug > 10000) {
+        lastDebug = millis();
+        Serial.print("[DEBUG] Mode: ");
+        Serial.print(currentMode);
+        Serial.print(" | WS: ");
+        Serial.println(wsConnected ? "Connected" : "Disconnected");
+    }
+
+    // Skip if enrollment is in progress
+    if (enrollmentInProgress) {
+        delay(20);
+        return;
     }
 
     // ── Dispatch ──────────────────────────────────────────────────────────────
